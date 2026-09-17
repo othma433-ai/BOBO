@@ -59,6 +59,7 @@ object ScanResultOrganizer {
         ScanStatus.REQUEST_PENDING,
         ScanStatus.ALREADY_MEMBER,
         ScanStatus.JOINED,
+        ScanStatus.EXPIRED,
         ScanStatus.FULL,
         ScanStatus.INVALID,
         ScanStatus.REMOVED,
@@ -95,6 +96,7 @@ object ScanResultOrganizer {
         ScanStatus.REQUEST_PENDING -> "Request Pending"
         ScanStatus.ALREADY_MEMBER -> "Already Member"
         ScanStatus.JOINED -> "Joined"
+        ScanStatus.EXPIRED -> "Expired"
         ScanStatus.INVALID -> "Invalid"
         ScanStatus.FULL -> "Full"
         ScanStatus.REMOVED -> "Removed"

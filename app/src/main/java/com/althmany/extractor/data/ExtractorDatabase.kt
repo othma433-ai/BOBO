@@ -120,6 +120,7 @@ class ExtractorDatabase(context: Context, databaseName: String = DB_NAME) : SQLi
                 scanned_at INTEGER,
                 confidence INTEGER NOT NULL DEFAULT 0,
                 member_count_text TEXT,
+                visible_member_indicator TEXT,
                 invite_kind TEXT NOT NULL DEFAULT 'UNKNOWN',
                 signal_code TEXT,
                 duration_ms INTEGER,
@@ -371,6 +372,9 @@ class ExtractorDatabase(context: Context, databaseName: String = DB_NAME) : SQLi
             // synchronization sees them again. Manual rows are preserved.
             runCatching { db.execSQL("UPDATE target_groups SET selected=0, stale=1 WHERE discovered=1") }
             runCatching { db.execSQL("CREATE INDEX IF NOT EXISTS idx_groups_stale_package ON target_groups(stale,whatsapp_package,sync_generation,id)") }
+        }
+        if (oldVersion < 12) {
+            runCatching { db.execSQL("ALTER TABLE scan_items ADD COLUMN visible_member_indicator TEXT") }
         }
     }
 
@@ -978,15 +982,16 @@ class ExtractorDatabase(context: Context, databaseName: String = DB_NAME) : SQLi
         scannedAt = if (c.isNull(10)) null else c.getLong(10),
         confidence = if (c.isNull(11)) 0 else c.getInt(11),
         memberCountText = c.getString(12),
-        inviteKind = runCatching { InviteKind.valueOf(c.getString(13) ?: InviteKind.UNKNOWN.name) }.getOrDefault(InviteKind.UNKNOWN),
-        signalCode = c.getString(14),
-        durationMs = if (c.isNull(15)) null else c.getLong(15),
-        targetPackage = c.getString(16)
+        visibleMemberIndicator = c.getString(13),
+        inviteKind = runCatching { InviteKind.valueOf(c.getString(14) ?: InviteKind.UNKNOWN.name) }.getOrDefault(InviteKind.UNKNOWN),
+        signalCode = c.getString(15),
+        durationMs = if (c.isNull(16)) null else c.getLong(16),
+        targetPackage = c.getString(17)
     )
 
     private val scanSelect = """
         SELECT id,url,normalized_url,invite_code,source_group,status,group_name,detail,attempts,added_at,scanned_at,
-               confidence,member_count_text,invite_kind,signal_code,duration_ms,target_package
+               confidence,member_count_text,visible_member_indicator,invite_kind,signal_code,duration_ms,target_package
         FROM scan_items
     """.trimIndent()
 
@@ -995,7 +1000,7 @@ class ExtractorDatabase(context: Context, databaseName: String = DB_NAME) : SQLi
     ).use { c -> buildList { while (c.moveToNext()) add(scanRecordFromCursor(c)) } }
 
     fun getPendingScanItems(limit: Int = 50_000): List<ScanRecord> = readableDatabase.rawQuery(
-        "$scanSelect WHERE status IN ('PENDING','UNKNOWN','NETWORK_ERROR','ERROR') ORDER BY id LIMIT ?",
+        "$scanSelect WHERE status='PENDING' ORDER BY id LIMIT ?",
         arrayOf(limit.toString())
     ).use { c -> buildList { while (c.moveToNext()) add(scanRecordFromCursor(c)) } }
 
@@ -1031,6 +1036,7 @@ class ExtractorDatabase(context: Context, databaseName: String = DB_NAME) : SQLi
         incrementAttempt: Boolean,
         confidence: Int = 0,
         memberCountText: String? = null,
+        visibleMemberIndicator: String? = null,
         inviteKind: InviteKind = InviteKind.UNKNOWN,
         signalCode: String? = null,
         durationMs: Long? = null,
@@ -1042,6 +1048,7 @@ class ExtractorDatabase(context: Context, databaseName: String = DB_NAME) : SQLi
             if (detail == null) putNull("detail") else put("detail", detail)
             put("confidence", confidence.coerceIn(0, 100))
             if (memberCountText == null) putNull("member_count_text") else put("member_count_text", memberCountText)
+            if (visibleMemberIndicator == null) putNull("visible_member_indicator") else put("visible_member_indicator", visibleMemberIndicator)
             put("invite_kind", inviteKind.name)
             if (signalCode == null) putNull("signal_code") else put("signal_code", signalCode)
             if (durationMs == null) putNull("duration_ms") else put("duration_ms", durationMs.coerceAtLeast(0L))
@@ -1053,7 +1060,7 @@ class ExtractorDatabase(context: Context, databaseName: String = DB_NAME) : SQLi
     }
 
     fun resetScanRunningItems() {
-        writableDatabase.execSQL("UPDATE scan_items SET status='PENDING' WHERE status='SCANNING'")
+        writableDatabase.execSQL("UPDATE scan_items SET status='PENDING', detail='استكمال بعد انقطاع سابق' WHERE status='SCANNING'")
     }
 
     fun clearScanItems() { writableDatabase.delete("scan_items", null, null) }
@@ -1071,12 +1078,17 @@ class ExtractorDatabase(context: Context, databaseName: String = DB_NAME) : SQLi
         val joined = counts[ScanStatus.JOINED.name] ?: 0
         val actionUncertain = counts[ScanStatus.ACTION_UNCERTAIN.name] ?: 0
         val already = counts[ScanStatus.ALREADY_MEMBER.name] ?: 0
+        val expired = counts[ScanStatus.EXPIRED.name] ?: 0
         val invalid = (counts[ScanStatus.INVALID.name] ?: 0) + (counts[ScanStatus.FULL.name] ?: 0) +
             (counts[ScanStatus.REMOVED.name] ?: 0) + (counts[ScanStatus.ACCOUNT_LIMIT.name] ?: 0)
         val network = counts[ScanStatus.NETWORK_ERROR.name] ?: 0
         val unknown = counts[ScanStatus.UNKNOWN.name] ?: 0
-        val accounted = pending + direct + approval + requestPending + joined + actionUncertain + already + invalid + network + unknown
-        return ScanStats(total, pending, direct, approval, requestPending, joined, actionUncertain, already, invalid, network, unknown, (total - accounted).coerceAtLeast(0))
+        val accounted = pending + direct + approval + requestPending + joined + actionUncertain + already + expired + invalid + network + unknown
+        return ScanStats(
+            total = total, pending = pending, direct = direct, approval = approval, requestPending = requestPending,
+            joined = joined, actionUncertain = actionUncertain, alreadyMember = already, expired = expired,
+            invalid = invalid, network = network, unknown = unknown, other = (total - accounted).coerceAtLeast(0)
+        )
     }
 
     fun getStats(): ExtractionStats {
@@ -1255,6 +1267,6 @@ class ExtractorDatabase(context: Context, databaseName: String = DB_NAME) : SQLi
 
     companion object {
         private const val DB_NAME = "althmany_extractor.db"
-        private const val DB_VERSION = 11
+        private const val DB_VERSION = 12
     }
 }

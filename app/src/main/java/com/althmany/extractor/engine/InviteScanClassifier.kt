@@ -12,6 +12,7 @@ data class InviteScanDecision(
     val signalCode: String = "UNKNOWN",
     val groupName: String? = null,
     val memberCountText: String? = null,
+    val visibleMemberIndicator: String? = null,
     val inviteKind: InviteKind = InviteKind.UNKNOWN
 )
 
@@ -29,11 +30,15 @@ object InviteScanClassifier {
     )
 
     private val rules = listOf(
+        Rule(ScanStatus.EXPIRED, "INVITE_EXPIRED", listOf(
+            "انتهت صلاحية رابط الدعوة", "انتهت صلاحية هذه الدعوة", "رابط الدعوة منتهي",
+            "this invite link has expired", "invite link has expired", "this invitation has expired", "invite expired"
+        ), "انتهت صلاحية رابط الدعوة", 100),
         Rule(ScanStatus.INVALID, "INVITE_INVALID", listOf(
             "رابط الدعوة غير صالح", "رابط الدعوة غير صالح أو تم إلغاؤه", "تمت إعادة تعيين رابط الدعوة",
             "تعذر الحصول على معلومات المجموعة", "هذه الدعوة غير صالحة", "invite link is invalid",
             "invite link was reset", "couldn't get group info", "could not get group info", "this invite link is invalid",
-            "invite link has been revoked", "invite link expired"
+            "invite link has been revoked", "invite link was revoked", "invitation revoked"
         ), "رابط الدعوة غير صالح/منتهي أو تمت إعادة تعيينه", 100),
         Rule(ScanStatus.FULL, "GROUP_FULL", listOf(
             "المجموعة ممتلئة", "المجموعة مكتملة", "group is full", "this group is full"
@@ -105,6 +110,7 @@ object InviteScanClassifier {
                     signalCode = rule.code,
                     groupName = metadata.groupName,
                     memberCountText = metadata.memberCountText,
+                    visibleMemberIndicator = metadata.visibleMemberIndicator,
                     inviteKind = metadata.inviteKind
                 )
             }
@@ -126,11 +132,17 @@ object InviteScanClassifier {
             signalCode = if (metadata.groupName != null) "PREVIEW_VISIBLE" else "NO_DEFINITIVE_SIGNAL",
             groupName = metadata.groupName,
             memberCountText = metadata.memberCountText,
+            visibleMemberIndicator = metadata.visibleMemberIndicator,
             inviteKind = metadata.inviteKind
         )
     }
 
-    private data class Metadata(val groupName: String?, val memberCountText: String?, val inviteKind: InviteKind)
+    private data class Metadata(
+        val groupName: String?,
+        val memberCountText: String?,
+        val visibleMemberIndicator: String?,
+        val inviteKind: InviteKind
+    )
 
     private fun detectMetadata(texts: List<String>, normalized: String): Metadata {
         val kind = when {
@@ -139,13 +151,13 @@ object InviteScanClassifier {
             else -> InviteKind.UNKNOWN
         }
 
+        val memberMetadata = InviteMemberMetadataParser.parse(texts)
+        val memberCount = memberMetadata.explicitMemberCountText
+        val visibleMemberIndicator = memberMetadata.visibleMemberIndicator
         val countRegexes = listOf(
             Regex("(?i)\\b[0-9٠-٩۰-۹][0-9٠-٩۰-۹,.٬، ]{0,10}\\s*(?:مشارك(?:ًا|ا)?|مشاركون|عضو|أعضاء)\\b"),
             Regex("(?i)\\b[0-9][0-9,. ]{0,10}\\s*(?:participants?|members?)\\b")
         )
-        val memberCount = texts.firstNotNullOfOrNull { text ->
-            countRegexes.firstNotNullOfOrNull { rx -> rx.find(text)?.value }
-        }
 
         val forbiddenPhrases = rules.flatMap { it.phrases }.map { it.lowercase(Locale.ROOT) }
         val groupName = texts.firstOrNull { value ->
@@ -160,6 +172,6 @@ object InviteScanClassifier {
                 !lower.contains("chat.whatsapp.com") &&
                 !s.matches(Regex("^[0-9٠-٩۰-۹:./+\\- ]+$"))
         }
-        return Metadata(groupName, memberCount, kind)
+        return Metadata(groupName, memberCount, visibleMemberIndicator, kind)
     }
 }

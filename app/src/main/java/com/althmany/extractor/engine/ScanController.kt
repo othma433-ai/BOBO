@@ -14,6 +14,7 @@ import com.althmany.extractor.data.ScanRecord
 import com.althmany.extractor.data.ScanStatus
 import com.althmany.extractor.profile.WhatsAppInstanceRegistry
 import com.althmany.extractor.profile.RuntimeBackendPreference
+import com.althmany.extractor.profile.RuntimeBackendKind
 import com.althmany.extractor.profile.UnifiedRuntimeRepository
 import com.althmany.extractor.shizuku.ShizukuBridge
 import com.althmany.extractor.shizuku.ShizukuUiRuntime
@@ -54,6 +55,10 @@ object ScanController {
     private val adapter = WhatsAppUiAdapter()
     private val shizukuUi: ShizukuUiRuntime by lazy { ShizukuUiRuntime(appContext) }
     @Volatile private var shizukuMode = false
+    @Volatile private var effectiveScanBackend: RuntimeBackendKind = RuntimeBackendKind.NONE
+    @Volatile private var uiEventGeneration: Long = 0L
+    @Volatile private var recoveryInProgress = false
+    @Volatile private var lastProgressNotificationMs: Long = 0L
     private var service: AccessibilityUiDriver? = null
     private var job: Job? = null
     @Volatile private var pauseRequested = false
@@ -91,7 +96,10 @@ object ScanController {
     fun notifyUiEvent(packageName: CharSequence?) {
         val observed = packageName?.toString() ?: return
         val expected = ExtractionController.state.value.selectedWhatsAppPackage ?: return
-        if (observed == expected) uiEvents.tryEmit(Unit)
+        if (observed == expected) {
+            uiEventGeneration += 1L
+            uiEvents.tryEmit(Unit)
+        }
     }
 
     private fun recoverLiveService(): AccessibilityUiDriver? {
@@ -100,7 +108,7 @@ object ScanController {
         return live
     }
 
-    private suspend fun ensureRuntimeReady(timeoutMs: Long = 12_000L): Boolean {
+    private suspend fun ensureRuntimeReady(timeoutMs: Long = 8_500L): Boolean {
         val packageName = ExtractionController.state.value.selectedWhatsAppPackage ?: run {
             _state.value = _state.value.copy(message = "RUNTIME_NO_TARGET: اختر نسخة واتساب أولاً")
             return false
@@ -136,11 +144,12 @@ object ScanController {
         if (runtimeTarget.effectiveBackend == com.althmany.extractor.profile.RuntimeBackendKind.ACCESSIBILITY &&
             !runtimeTarget.remoteTarget
         ) {
-            val accessDeadline = SystemClock.elapsedRealtime() + minOf(timeoutMs, 5_000L)
+            val accessDeadline = SystemClock.elapsedRealtime() + minOf(timeoutMs, 1_800L)
             while (SystemClock.elapsedRealtime() < accessDeadline) {
                 val live = recoverLiveService()
                 if (live != null && adapter.isWhatsAppRoot(live.currentRoot(), packageName)) {
                     shizukuMode = false
+                    effectiveScanBackend = RuntimeBackendKind.ACCESSIBILITY
                     _state.value = _state.value.copy(
                         message = "READY_ACCESSIBILITY: الفحص يرى واتساب عبر Accessibility"
                     )
@@ -170,12 +179,13 @@ object ScanController {
             ShizukuBridge.launchPackage(appContext, packageName, runtimeTarget.targetAndroidUserId)
             var lastDetail = "NO_SNAPSHOT"
             var resetTried = false
-            val deadline = SystemClock.elapsedRealtime() + (timeoutMs - 5_000L).coerceAtLeast(6_000L)
+            val deadline = SystemClock.elapsedRealtime() + (timeoutMs - 1_800L).coerceAtLeast(5_000L)
             while (SystemClock.elapsedRealtime() < deadline) {
                 val tree = shizukuUi.snapshot(packageName)
                 lastDetail = "${tree.state}:${tree.detail.take(140)}"
                 if (tree.state == "OK" && tree.nodes.isNotEmpty() && shizukuUi.isWhatsApp(tree, packageName)) {
                     shizukuMode = true
+                    effectiveScanBackend = RuntimeBackendKind.SHIZUKU
                     _state.value = _state.value.copy(
                         message = "READY_SHIZUKU: الفحص يرى واتساب عبر Shizuku (${tree.nodes.size} node)"
                     )
@@ -200,6 +210,7 @@ object ScanController {
         }
 
         shizukuMode = false
+        effectiveScanBackend = RuntimeBackendKind.NONE
         return false
     }
 
@@ -372,7 +383,7 @@ object ScanController {
                         currentConfidence = 0,
                         message = "فحص ${index + 1}/${items.size} • محاولة $attempt/$maxAttempts"
                     )
-                    notifier.show(_state.value)
+                    maybeNotifyProgress()
                     repository.markScanAttempt(
                         id = item.id,
                         detail = "جارٍ الفحص — محاولة $attempt/$maxAttempts",
@@ -392,12 +403,13 @@ object ScanController {
                         incrementAttempt = false,
                         confidence = d.confidence,
                         memberCountText = d.memberCountText,
+                        visibleMemberIndicator = d.visibleMemberIndicator,
                         inviteKind = d.inviteKind,
                         signalCode = d.signalCode,
                         durationMs = result.durationMs,
                         targetPackage = ExtractionController.state.value.selectedWhatsAppPackage
                     )
-                    refreshStats()
+                    if (ScanHotLoopPolicy.shouldRefreshStats(index + 1, index == items.lastIndex)) refreshStats()
 
                     if (!ScanRetryPolicy.shouldRetry(d.status, attempt, maxAttempts)) break
 
@@ -415,10 +427,9 @@ object ScanController {
                         message = "${last.status.labelAr} • ثقة ${last.confidence}%",
                         currentConfidence = last.confidence
                     )
-                    notifier.show(_state.value)
+                    maybeNotifyProgress()
                 }
-                safelyReturnFromInvite(speed)
-                // Event-first: انتقل للرابط التالي بدون Delay صناعي ثانٍ.
+                // Stay inside WhatsApp and open the next invite directly.
             }
 
             _state.value = _state.value.copy(
@@ -459,6 +470,8 @@ object ScanController {
             )
 
         awaitNetworkAvailability()
+        val preOpenGeneration = uiEventGeneration
+        val preOpenSignature = currentAccessibilitySignature(packageName)
         if (!openInvite(item.normalizedUrl, packageName)) {
             return TimedDecision(
                 InviteScanDecision(
@@ -475,24 +488,7 @@ object ScanController {
         _state.value = _state.value.copy(status = ScanEngineStatus.CLASSIFYING, message = "تحليل شاشة الدعوة")
         var deadline = SystemClock.uptimeMillis() + speed.previewTimeoutMs
         var last = InviteScanDecision(ScanStatus.UNKNOWN, "بانتظار ظهور حالة الدعوة", false, 0, "WAITING")
-        var stableSignature = 0
-        var stableRounds = 0
-        val stableThreshold = when (speed) {
-            ScanSpeedProfile.HYPER -> 2
-            ScanSpeedProfile.ADAPTIVE -> 4
-            ScanSpeedProfile.SAFE -> 6
-        }
-        // Even a strong Join/Request/Expired label passes through a short stability gate. This
-        // prevents one transient accessibility mutation from becoming the committed result while
-        // still allowing clear cases to finish far below the 5.6s adaptive ceiling.
-        val definitiveStableThreshold = when (speed) {
-            ScanSpeedProfile.HYPER -> 1
-            ScanSpeedProfile.ADAPTIVE -> 2
-            ScanSpeedProfile.SAFE -> 3
-        }
-        var definitiveSignature = 0
-        var definitiveRounds = 0
-        var definitiveCandidate: InviteScanDecision? = null
+        var snapshotIndex = 0
 
         while (SystemClock.uptimeMillis() < deadline) {
             waitIfPaused()
@@ -511,50 +507,61 @@ object ScanController {
                         SystemClock.uptimeMillis() - started
                     )
                 }
-                stableSignature = 0
-                stableRounds = 0
+                snapshotIndex = 0
                 last = InviteScanDecision(ScanStatus.UNKNOWN, "إعادة قراءة الرابط بعد عودة الاتصال", false, 0, "WAITING")
                 deadline = SystemClock.uptimeMillis() + speed.previewTimeoutMs
                 _state.value = _state.value.copy(status = ScanEngineStatus.CLASSIFYING, message = "عاد الاتصال — إعادة تحليل نفس الرابط")
             }
-            val root = recoverLiveService()?.currentRoot()
-            if (root != null && adapter.isWhatsAppRoot(root, packageName)) {
+            val live = recoverLiveService()
+            val root = live?.currentRoot()
+            if (live == null || root == null || !adapter.isWhatsAppRoot(root, packageName)) {
+                if (recoverRuntimeForCurrentItem(item, "ACCESSIBILITY_ROOT_LOST")) {
+                    deadline = SystemClock.uptimeMillis() + speed.previewTimeoutMs
+                    continue
+                }
+                return TimedDecision(
+                    InviteScanDecision(
+                        ScanStatus.UNKNOWN,
+                        "تعذر استعادة محرك الفحص لنفس الرابط",
+                        false,
+                        0,
+                        "RUNTIME_RECOVERY_FAILED"
+                    ),
+                    SystemClock.uptimeMillis() - started
+                )
+            }
+            if (adapter.isWhatsAppRoot(root, packageName)) {
                 val snap = adapter.snapshot(root)
+                val candidateSignature = ScanScreenFreshnessGate.signature(snap.texts)
+                if (!ScanScreenFreshnessGate.isFresh(
+                        preOpenSignature,
+                        candidateSignature,
+                        uiEventGeneration > preOpenGeneration
+                    )
+                ) {
+                    delay(ScanHotLoopPolicy.stalePollDelayMs)
+                    continue
+                }
+                snapshotIndex += 1
                 val decision = InviteScanClassifier.classify(snap.texts)
                 last = chooseBetter(last, decision)
                 _state.value = _state.value.copy(currentConfidence = last.confidence)
-                if (decision.definitive) {
-                    val sameFact = definitiveCandidate?.status == decision.status &&
-                        definitiveCandidate?.groupName == decision.groupName &&
-                        definitiveCandidate?.inviteKind == decision.inviteKind
-                    if (sameFact && snap.signature != 0 && snap.signature == definitiveSignature) {
-                        definitiveRounds++
-                    } else {
-                        definitiveCandidate = decision
-                        definitiveSignature = snap.signature
-                        definitiveRounds = 0
-                    }
-                    if (definitiveRounds >= definitiveStableThreshold) {
-                        val stableDecision = definitiveCandidate ?: decision
-                        val acted = maybeApplyMembershipAction(stableDecision, speed, packageName)
-                        return TimedDecision(acted, SystemClock.uptimeMillis() - started)
-                    }
-                } else {
-                    definitiveCandidate = null
-                    definitiveSignature = 0
-                    definitiveRounds = 0
+                when (FastContinuousScanPolicy.next(last, snapshotIndex)) {
+                    FastScanAction.SAVE_AND_NEXT ->
+                        return TimedDecision(last, SystemClock.uptimeMillis() - started)
+                    FastScanAction.SHORT_VERIFY ->
+                        delay(FastContinuousScanPolicy.shortVerifyDelayMs)
+                    FastScanAction.SAVE_UNKNOWN_AND_NEXT ->
+                        return TimedDecision(
+                            last.copy(
+                                status = ScanStatus.UNKNOWN,
+                                detail = "لم تظهر إشارة مؤكدة بعد قراءتين سريعتين",
+                                definitive = false,
+                                signalCode = "FAST_UNKNOWN"
+                            ),
+                            SystemClock.uptimeMillis() - started
+                        )
                 }
-
-                if (snap.signature != 0 && snap.signature == stableSignature) {
-                    stableRounds++
-                } else {
-                    stableSignature = snap.signature
-                    stableRounds = 0
-                }
-
-                // Stop waiting only when WhatsApp is visibly stable and the preview contains enough
-                // structure. A transient blank/loading root must not become UNKNOWN prematurely.
-                if (stableRounds >= stableThreshold && snap.visibleNodeCount > 15 && last.confidence >= 25) break
             }
             withTimeoutOrNull(speed.eventWaitMs) { uiEvents.first() }
             delay(speed.settleDelayMs)
@@ -566,8 +573,7 @@ object ScanController {
             definitive = true,
             signalCode = if (last.signalCode == "WAITING") "TIMEOUT_NO_SIGNAL" else last.signalCode
         )
-        val actedFinal = maybeApplyMembershipAction(final, speed, packageName)
-        return TimedDecision(actedFinal, SystemClock.uptimeMillis() - started)
+        return TimedDecision(final, SystemClock.uptimeMillis() - started)
     }
 
     private suspend fun maybeApplyMembershipAction(
@@ -694,17 +700,15 @@ object ScanController {
         val packageName = ExtractionController.state.value.selectedWhatsAppPackage
             ?: return TimedDecision(InviteScanDecision(ScanStatus.ERROR, "لم يتم تحديد نسخة واتساب", true, 100, "NO_TARGET_PACKAGE"), 0L)
         awaitNetworkAvailability()
+        val preOpenTree = shizukuUi.snapshot(packageName)
+        val preOpenSignature = ScanScreenFreshnessGate.signature(preOpenTree.texts)
         if (!openInvite(item.normalizedUrl, packageName)) {
             return TimedDecision(InviteScanDecision(ScanStatus.ERROR, "تعذر فتح الرابط في ${WhatsAppInstanceRegistry.labelFor(packageName)}", true, 100, "LAUNCH_FAILED"), SystemClock.uptimeMillis()-started)
         }
         _state.value = _state.value.copy(status = ScanEngineStatus.CLASSIFYING, message = "Shizuku: تحليل شاشة الدعوة")
         var deadline = SystemClock.uptimeMillis() + speed.previewTimeoutMs
         var last = InviteScanDecision(ScanStatus.UNKNOWN, "بانتظار ظهور حالة الدعوة", false, 0, "WAITING")
-        var stableSignature = 0
-        var stableRounds = 0
-        val stableThreshold = when(speed){ScanSpeedProfile.HYPER->2;ScanSpeedProfile.ADAPTIVE->4;ScanSpeedProfile.SAFE->6}
-        val definitiveThreshold = when(speed){ScanSpeedProfile.HYPER->1;ScanSpeedProfile.ADAPTIVE->2;ScanSpeedProfile.SAFE->3}
-        var definitiveSignature=0; var definitiveRounds=0; var definitiveCandidate:InviteScanDecision?=null
+        var snapshotIndex = 0
         var sequence = shizukuUi.eventSequence(packageName)
 
         while(SystemClock.uptimeMillis()<deadline){
@@ -713,24 +717,52 @@ object ScanController {
                 _state.value=_state.value.copy(status=ScanEngineStatus.WAITING_NETWORK,message="انقطع الاتصال — انتظار الشبكة بدون تصنيف الرابط كتالف")
                 awaitNetworkAvailability(); safelyReturnFromInvite(speed)
                 if(!openInvite(item.normalizedUrl,packageName)) return TimedDecision(InviteScanDecision(ScanStatus.ERROR,"عاد الاتصال لكن تعذر فتح نفس الرابط",true,100,"REOPEN_FAILED"),SystemClock.uptimeMillis()-started)
-                stableSignature=0;stableRounds=0;definitiveSignature=0;definitiveRounds=0;definitiveCandidate=null;deadline=SystemClock.uptimeMillis()+speed.previewTimeoutMs
+                snapshotIndex=0;deadline=SystemClock.uptimeMillis()+speed.previewTimeoutMs
             }
             val frame=shizukuUi.waitFrame(packageName,sequence,speed.eventWaitMs.toInt().coerceAtLeast(40));sequence=frame.first
             val tree=frame.second.takeIf{it.state=="OK"}?:awaitShizukuTree(packageName,500L)
+            if (tree == null) {
+                if (recoverRuntimeForCurrentItem(item, "SHIZUKU_UI_LOST")) {
+                    deadline = SystemClock.uptimeMillis() + speed.previewTimeoutMs
+                    continue
+                }
+                return TimedDecision(
+                    InviteScanDecision(
+                        ScanStatus.UNKNOWN,
+                        "تعذر استعادة Shizuku/المحرك البديل لنفس الرابط",
+                        false,
+                        0,
+                        "RUNTIME_RECOVERY_FAILED"
+                    ),
+                    SystemClock.uptimeMillis()-started
+                )
+            }
             if(tree!=null){
+                val candidateSignature = ScanScreenFreshnessGate.signature(tree.texts)
+                if (!ScanScreenFreshnessGate.isFresh(preOpenSignature, candidateSignature, false)) {
+                    delay(ScanHotLoopPolicy.stalePollDelayMs)
+                    continue
+                }
+                snapshotIndex += 1
                 val decision=InviteScanClassifier.classify(tree.texts);last=chooseBetter(last,decision);_state.value=_state.value.copy(currentConfidence=last.confidence)
-                if(decision.definitive){
-                    val same=definitiveCandidate?.status==decision.status&&definitiveCandidate?.groupName==decision.groupName&&definitiveCandidate?.inviteKind==decision.inviteKind
-                    if(same&&tree.signature!=0&&tree.signature==definitiveSignature)definitiveRounds++ else {definitiveCandidate=decision;definitiveSignature=tree.signature;definitiveRounds=0}
-                    if(definitiveRounds>=definitiveThreshold){val d=definitiveCandidate?:decision;return TimedDecision(maybeApplyMembershipActionShizuku(d,speed,packageName),SystemClock.uptimeMillis()-started)}
-                } else {definitiveCandidate=null;definitiveSignature=0;definitiveRounds=0}
-                if(tree.signature!=0&&tree.signature==stableSignature)stableRounds++ else {stableSignature=tree.signature;stableRounds=0}
-                if(stableRounds>=stableThreshold&&tree.visibleNodeCount>12&&last.confidence>=25)break
+                when (FastContinuousScanPolicy.next(last, snapshotIndex)) {
+                    FastScanAction.SAVE_AND_NEXT -> return TimedDecision(last,SystemClock.uptimeMillis()-started)
+                    FastScanAction.SHORT_VERIFY -> delay(FastContinuousScanPolicy.shortVerifyDelayMs)
+                    FastScanAction.SAVE_UNKNOWN_AND_NEXT -> return TimedDecision(
+                        last.copy(
+                            status = ScanStatus.UNKNOWN,
+                            detail = "Shizuku: لم تظهر إشارة مؤكدة بعد قراءتين سريعتين",
+                            definitive = false,
+                            signalCode = "FAST_UNKNOWN"
+                        ),
+                        SystemClock.uptimeMillis()-started
+                    )
+                }
             }
             delay(speed.settleDelayMs)
         }
         val final=last.copy(status=last.status,detail=if(last.status==ScanStatus.UNKNOWN)"Shizuku: لم تظهر علامة مؤكدة بعد انتظار شاشة مستقرة" else last.detail,definitive=true,signalCode=if(last.signalCode=="WAITING")"TIMEOUT_NO_SIGNAL" else last.signalCode)
-        return TimedDecision(maybeApplyMembershipActionShizuku(final,speed,packageName),SystemClock.uptimeMillis()-started)
+        return TimedDecision(final,SystemClock.uptimeMillis()-started)
     }
 
     private suspend fun maybeApplyMembershipActionShizuku(decision: InviteScanDecision, speed: ScanSpeedProfile, packageName: String): InviteScanDecision {
@@ -781,11 +813,77 @@ object ScanController {
             }
             val post=InviteScanClassifier.classify(currentTree.texts);best=chooseBetter(best,post)
             if(!approval){val chat=decision.groupName?.let{shizukuUi.isConversationOpenForTarget(currentTree,it,packageName)}==true;if(post.status==ScanStatus.ALREADY_MEMBER||chat)return decision.copy(status=ScanStatus.JOINED,detail="تم الانضمام والتحقق عبر Shizuku",signalCode="JOIN_VERIFIED",confidence=100,definitive=true)}
-            else if(post.status==ScanStatus.REQUEST_PENDING)return post.copy(detail="تم إرسال الطلب والتحقق عبر Shizuku",signalCode="REQUEST_VERIFIED",confidence=100,definitive=true,groupName=post.groupName?:decision.groupName,memberCountText=post.memberCountText?:decision.memberCountText,inviteKind=if(post.inviteKind==InviteKind.UNKNOWN)decision.inviteKind else post.inviteKind)
+            else if(post.status==ScanStatus.REQUEST_PENDING)return post.copy(detail="تم إرسال الطلب والتحقق عبر Shizuku",signalCode="REQUEST_VERIFIED",confidence=100,definitive=true,groupName=post.groupName?:decision.groupName,memberCountText=post.memberCountText?:decision.memberCountText,visibleMemberIndicator=post.visibleMemberIndicator?:decision.visibleMemberIndicator,inviteKind=if(post.inviteKind==InviteKind.UNKNOWN)decision.inviteKind else post.inviteKind)
             if(post.status in setOf(ScanStatus.INVALID,ScanStatus.FULL,ScanStatus.REMOVED,ScanStatus.ACCOUNT_LIMIT))return post
             delay(speed.settleDelayMs)
         }
         return decision.copy(status=ScanStatus.ACTION_UNCERTAIN,detail=if(approval)"تم ضغط الطلب لكن لم يظهر إثبات نهائي؛ لن يعاد تلقائيًا" else "تم ضغط الانضمام لكن لم يظهر إثبات نهائي؛ لن يعاد تلقائيًا",signalCode=if(approval)"REQUEST_ACTION_UNCERTAIN" else "JOIN_ACTION_UNCERTAIN",confidence=maxOf(decision.confidence,best.confidence),definitive=true)
+    }
+
+    private fun currentAccessibilitySignature(packageName: String): String? {
+        val root = recoverLiveService()?.currentRoot() ?: return null
+        if (!adapter.isWhatsAppRoot(root, packageName)) return null
+        return ScanScreenFreshnessGate.signature(adapter.snapshot(root).texts)
+    }
+
+    private suspend fun recoverRuntimeForCurrentItem(item: ScanRecord, reason: String): Boolean {
+        if (recoveryInProgress) return false
+        recoveryInProgress = true
+        try {
+            val packageName = ExtractionController.state.value.selectedWhatsAppPackage ?: return false
+            val preference = UnifiedRuntimeRepository.preference(appContext)
+            val sh = runCatching { ShizukuBridge.status() }.getOrNull()
+            val shizukuReady = sh?.let {
+                it.binderAlive && it.permissionGranted && it.userServiceBound
+            } == true
+            val accessibilityReady = recoverLiveService() != null
+            val plan = ScanRuntimeRecoveryPolicy.plan(
+                preference = preference,
+                failedBackend = effectiveScanBackend,
+                accessibilityCanRecover = accessibilityReady,
+                shizukuReady = shizukuReady
+            )
+
+            _state.value = _state.value.copy(
+                status = ScanEngineStatus.RECOVERING,
+                currentUrl = item.normalizedUrl,
+                message = "استعادة المحرك • نفس الرابط • $reason"
+            )
+
+            for (step in plan.steps) {
+                when (step) {
+                    ScanRecoveryStep.RETRY_ACCESSIBILITY,
+                    ScanRecoveryStep.SWITCH_TO_ACCESSIBILITY -> {
+                        val live = recoverLiveService()
+                        if (live != null && adapter.isWhatsAppRoot(live.currentRoot(), packageName)) {
+                            shizukuMode = false
+                            effectiveScanBackend = RuntimeBackendKind.ACCESSIBILITY
+                            return openInvite(item.normalizedUrl, packageName)
+                        }
+                    }
+
+                    ScanRecoveryStep.RETRY_SHIZUKU,
+                    ScanRecoveryStep.SWITCH_TO_SHIZUKU -> {
+                        if (ShizukuBridge.ensureBound(appContext, 1_500L)) {
+                            shizukuMode = true
+                            effectiveScanBackend = RuntimeBackendKind.SHIZUKU
+                            return openInvite(item.normalizedUrl, packageName)
+                        }
+                    }
+                }
+            }
+            return false
+        } finally {
+            recoveryInProgress = false
+        }
+    }
+
+    private fun maybeNotifyProgress(force: Boolean = false) {
+        val now = SystemClock.elapsedRealtime()
+        if (force || ScanHotLoopPolicy.shouldNotify(lastProgressNotificationMs, now)) {
+            lastProgressNotificationMs = now
+            notifier.show(_state.value)
+        }
     }
 
     private fun chooseBetter(a: InviteScanDecision, b: InviteScanDecision): InviteScanDecision {

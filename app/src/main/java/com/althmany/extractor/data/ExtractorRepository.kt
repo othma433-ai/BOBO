@@ -93,12 +93,13 @@ class ExtractorRepository(private val db: ExtractorDatabase) {
         incrementAttempt: Boolean,
         confidence: Int = 0,
         memberCountText: String? = null,
+        visibleMemberIndicator: String? = null,
         inviteKind: InviteKind = InviteKind.UNKNOWN,
         signalCode: String? = null,
         durationMs: Long? = null,
         targetPackage: String? = null
     ) = withContext(Dispatchers.IO) {
-        db.updateScanResult(id, status, groupName, detail, incrementAttempt, confidence, memberCountText, inviteKind, signalCode, durationMs, targetPackage)
+        db.updateScanResult(id, status, groupName, detail, incrementAttempt, confidence, memberCountText, visibleMemberIndicator, inviteKind, signalCode, durationMs, targetPackage)
     }
     suspend fun resetScanRunningItems() = withContext(Dispatchers.IO) { db.resetScanRunningItems() }
     suspend fun clearScan() = withContext(Dispatchers.IO) { db.clearScanItems() }

@@ -175,7 +175,7 @@ fun UnifiedRuntimeCard(
             }
 
             Text(
-                "محرك التحكم",
+                "محرك التنفيذ",
                 color = URText,
                 style = MaterialTheme.typography.titleMedium,
                 modifier = Modifier.fillMaxWidth(),
@@ -186,7 +186,11 @@ fun UnifiedRuntimeCard(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                listOf(RuntimeBackendPreference.ACCESSIBILITY, RuntimeBackendPreference.SHIZUKU).reversed().forEach { backend ->
+                listOf(
+                    RuntimeBackendPreference.AUTO,
+                    RuntimeBackendPreference.ACCESSIBILITY,
+                    RuntimeBackendPreference.SHIZUKU
+                ).reversed().forEach { backend ->
                     RuntimeChoice(
                         label = backend.labelAr,
                         selected = runtime.preference == backend,

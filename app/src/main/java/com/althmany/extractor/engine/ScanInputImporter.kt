@@ -19,6 +19,8 @@ object ScanInputImporter {
             when {
                 name.endsWith(".xlsx") || mime.contains("spreadsheetml") -> readXlsx(input)
                 name.endsWith(".xls") || mime.contains("ms-excel") -> readLegacyXls(input)
+                name.endsWith(".txt") || name.endsWith(".csv") || name.endsWith(".json") ||
+                    mime.startsWith("text/") || mime.contains("csv") || mime.contains("json") -> readTextFile(input)
                 else -> readTextFile(input)
             }
         } ?: emptySet()

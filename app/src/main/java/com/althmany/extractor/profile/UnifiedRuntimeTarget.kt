@@ -6,7 +6,7 @@ import com.althmany.extractor.accessibility.AccessibilityRuntimeBridge
 import com.althmany.extractor.shizuku.ShizukuBridge
 
 enum class RuntimeBackendPreference(val labelAr: String) {
-    AUTO("تلقائي"),
+    AUTO("تلقائي — Accessibility ثم Shizuku"),
     ACCESSIBILITY("Accessibility"),
     SHIZUKU("Shizuku")
 }
@@ -69,10 +69,10 @@ object UnifiedRuntimeTargetStore {
     fun preference(context: Context): RuntimeBackendPreference =
         runCatching {
             RuntimeBackendPreference.valueOf(
-                prefs(context).getString(KEY_BACKEND, RuntimeBackendPreference.ACCESSIBILITY.name)
-                    ?: RuntimeBackendPreference.ACCESSIBILITY.name
+                prefs(context).getString(KEY_BACKEND, RuntimeBackendPreference.AUTO.name)
+                    ?: RuntimeBackendPreference.AUTO.name
             )
-        }.getOrDefault(RuntimeBackendPreference.ACCESSIBILITY)
+        }.getOrDefault(RuntimeBackendPreference.AUTO)
 
     fun setPreference(context: Context, value: RuntimeBackendPreference) {
         prefs(context).edit().putString(KEY_BACKEND, value.name).apply()
@@ -112,7 +112,6 @@ object UnifiedRuntimeTargetStore {
             .putInt(KEY_USER_ID, target.androidUserId)
             .putString(KEY_USER_LABEL, target.environmentLabel)
             .putBoolean(KEY_REMOTE, true)
-            .putString(KEY_BACKEND, RuntimeBackendPreference.SHIZUKU.name)
             .apply()
     }
 
@@ -154,7 +153,10 @@ object UnifiedRuntimeTargetStore {
 
         val selected = available.firstOrNull { it.packageName == selectedPackage }
         val accessibilityReady = AccessibilityRuntimeBridge.currentEvenIfQuiet() != null
-        val shizukuReady = runCatching { ShizukuBridge.status().ready }.getOrDefault(false)
+        val shizukuStatus = runCatching { ShizukuBridge.status() }.getOrNull()
+        val shizukuReady = shizukuStatus?.let {
+            it.binderAlive && it.permissionGranted && it.userServiceBound
+        } == true
         val pref = preference(appContext)
 
         val effective = if (storedRemote) {
@@ -193,7 +195,7 @@ object UnifiedRuntimeTargetStore {
             pref == RuntimeBackendPreference.ACCESSIBILITY && !accessibilityReady ->
                 "Accessibility محددة يدويًا لكنها غير متصلة داخل $environmentLabel"
             pref == RuntimeBackendPreference.SHIZUKU && !shizukuReady ->
-                "Shizuku محدد يدويًا لكنه غير جاهز/غير مصرح"
+                "Shizuku محدد يدويًا لكنه غير جاهز بالكامل (Binder + Permission + UserService)"
             !accessibilityReady && !shizukuReady ->
                 "لا يوجد Backend جاهز داخل $environmentLabel"
             else -> "جاهز: $environmentLabel • $label • ${

@@ -33,7 +33,7 @@ object StructuredScanExporter {
         resolver.openOutputStream(uri)?.use { out ->
             BufferedWriter(OutputStreamWriter(out, Charsets.UTF_8)).use { w ->
                 w.write(
-                    "Group,Members,Members Text,Status,Invite Kind,Confidence,URL,Invite Code," +
+                    "Group,Members,Members Text,Visible Member Indicator,Status,Invite Kind,Confidence,URL,Invite Code," +
                         "Source Group,Signal,Detail,Attempts,Duration ms,Target Package,Scanned At\n"
                 )
                 items.forEach { r ->
@@ -43,6 +43,7 @@ object StructuredScanExporter {
                             r.groupName.orEmpty(),
                             numeric?.toString().orEmpty(),
                             r.memberCountText.orEmpty(),
+                            r.visibleMemberIndicator.orEmpty(),
                             r.status.labelAr,
                             r.inviteKind.labelAr,
                             r.confidence.toString(),
@@ -117,6 +118,7 @@ object StructuredScanExporter {
                             "\"groupName\":\"${json(r.groupName.orEmpty())}\"," +
                             "\"memberCount\":${numeric ?: "null"}," +
                             "\"memberCountText\":\"${json(r.memberCountText.orEmpty())}\"," +
+                            "\"visibleMemberIndicator\":\"${json(r.visibleMemberIndicator.orEmpty())}\"," +
                             "\"status\":\"${json(r.status.name)}\"," +
                             "\"statusAr\":\"${json(r.status.labelAr)}\"," +
                             "\"inviteKind\":\"${json(r.inviteKind.name)}\"," +
@@ -251,6 +253,7 @@ object StructuredScanExporter {
                 "Group Name",
                 "Members",
                 "Members Text",
+                "Visible Member Indicator",
                 "Status",
                 "Invite Kind",
                 "Confidence",
@@ -273,6 +276,7 @@ object StructuredScanExporter {
                     r.groupName.orEmpty(),
                     MemberCountParser.parse(r.memberCountText)?.toString().orEmpty(),
                     r.memberCountText.orEmpty(),
+                    r.visibleMemberIndicator.orEmpty(),
                     r.status.labelAr,
                     r.inviteKind.labelAr,
                     r.confidence.toString(),

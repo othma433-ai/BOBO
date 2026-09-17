@@ -441,7 +441,7 @@ private fun PScanResultRow(item: ScanRecord) {
     val tint = when (item.status) {
         ScanStatus.DIRECT, ScanStatus.ALREADY_MEMBER, ScanStatus.JOINED -> PGreen
         ScanStatus.APPROVAL, ScanStatus.REQUEST_PENDING -> POrange
-        ScanStatus.INVALID, ScanStatus.FULL, ScanStatus.REMOVED,
+        ScanStatus.EXPIRED, ScanStatus.INVALID, ScanStatus.FULL, ScanStatus.REMOVED,
         ScanStatus.ACCOUNT_LIMIT, ScanStatus.ERROR -> PRed
         ScanStatus.NETWORK_ERROR, ScanStatus.UNKNOWN, ScanStatus.ACTION_UNCERTAIN -> PPurple
         else -> PCyan
@@ -595,7 +595,7 @@ fun ProfessionalScanScreen(
                     )
                     Spacer(Modifier.height(8.dp))
                     Text(
-                        "الأداء الموحد: فائق • فحص واحد لكل رابط • بدون إعادة فتح تلقائية",
+                        "الأداء الموحد: فائق • قراءتان كحد أقصى للرابط • الاستكمال من آخر رابط غير مكتمل",
                         color = PCyan,
                         fontSize = 12.sp,
                         fontWeight = FontWeight.SemiBold,
