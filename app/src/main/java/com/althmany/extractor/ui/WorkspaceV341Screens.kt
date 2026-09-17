@@ -296,7 +296,7 @@ fun V341BottomBar(current: AppScreen, onNavigate: (AppScreen) -> Unit) {
         Triple(AppScreen.LOGS, "التشخيص", Icons.Default.Settings)
     )
     NavigationBar(containerColor = Color(0xFF061520), tonalElevation = 0.dp, modifier = Modifier.height(64.dp)) {
-        entries.reversed().forEach { (screen, label, icon) ->
+        entries.forEach { (screen, label, icon) ->
             NavigationBarItem(
                 selected = current == screen,
                 onClick = { onNavigate(screen) },

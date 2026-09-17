@@ -352,7 +352,7 @@ object ExtractionController {
             val prefs = settingsStore.get()
             // NEW_ONLY keeps its last completed baseline untouched until a successful new-only pass.
             // Also avoid writing a bogus search/info-screen checkpoint if pause was pressed between chats.
-            val root = service?.currentRoot()
+            val root = recoverLiveService()?.currentRoot()
             val inDeepChat = _state.value.status in setOf(EngineStatus.EXTRACTING, EngineStatus.VERIFYING_END) &&
                 adapter.isGroupVisible(root, name, selectedPackageOrNull())
             if (prefs.mode != ExtractionMode.NEW_ONLY && inDeepChat) {
@@ -428,7 +428,7 @@ object ExtractionController {
         refreshRuntimeEnvironment()
         if (UnifiedRuntimeRepository.isRemoteTarget(appContext)) return false
         val packageName = _state.value.selectedWhatsAppPackage ?: return false
-        if (adapter.isWhatsAppRoot(service?.currentRoot(), packageName)) return true
+        if (adapter.isWhatsAppRoot(recoverLiveService()?.currentRoot(), packageName)) return true
         if (_state.value.availableWhatsApp.none { it.packageName == packageName && it.launchable }) return false
         val intent = appContext.packageManager.getLaunchIntentForPackage(packageName) ?: return false
         // Explicit package launch: PackageManager here is scoped to the current Android user/profile.
@@ -924,9 +924,9 @@ object ExtractionController {
                 return
             }
 
-            val liveAccessibility = awaitRuntimeService(1_500L)
+            val liveAccessibility = awaitRuntimeService(5_000L)
             val accessibilityReady = liveAccessibility != null &&
-                awaitWhatsAppRoot(liveAccessibility, targetPackage, 1_800L)
+                awaitWhatsAppRoot(liveAccessibility, targetPackage, 5_000L)
 
             if (!accessibilityReady) {
                 if (backendPreference == RuntimeBackendPreference.AUTO && ShizukuBridge.status().ready) {
@@ -1181,6 +1181,15 @@ object ExtractionController {
         var unreadBoundarySeen = false
         var finishReason: String? = null
 
+        if (!fastForwardResume) {
+            _state.value = _state.value.copy(
+                status = EngineStatus.EXTRACTING,
+                message = "تثبيت أحدث رسالة قبل المسح العميق…",
+                phaseDetail = "deep-seek-newest"
+            )
+            totalNew += seekNewestBeforeDeep(group, prefs, seen)
+        }
+
         _state.value = _state.value.copy(status = EngineStatus.EXTRACTING, message = "قراءة المحادثة والسحب للرسائل الأقدم")
 
         while (stateStore.active && iterations < prefs.maxScrollIterations) {
@@ -1302,6 +1311,72 @@ object ExtractionController {
         }
         repository.log(group.name, "INFO", "group-completed", "reason=$finishReason iterations=$iterations newLinks=$totalNew")
         updateProgress(totalNew, "اكتمل القروب • $totalNew رابط جديد")
+    }
+
+    /**
+     * Normalize a fresh deep/all run to WhatsApp's newest-message boundary.
+     * Capture URLs before and after every move so an unread-open position cannot
+     * skip links while travelling to the bottom.
+     */
+    private suspend fun seekNewestBeforeDeep(
+        group: TargetGroup,
+        prefs: ExtractionPreferences,
+        seen: MutableSet<String>
+    ): Int {
+        val svc = recoverLiveService() ?: error("Accessibility service disconnected")
+        val timing = ExtractionPolicy.timing(prefs.speed)
+        var totalNew = 0
+        var passes = 0
+        val maxSeekPasses = minOf(prefs.maxScrollIterations, 240)
+
+        while (stateStore.active && passes < maxSeekPasses) {
+            awaitIfPaused()
+            ensureWhatsAppForeground(prefs)
+            val root = recoverLiveService()?.currentRoot() ?: run {
+                awaitUiChange(timing.eventQuietMs)
+                continue
+            }
+            if (!adapter.isConversationOpenForTarget(root, group.name, selectedPackageOrNull())) {
+                error("خرج واتساب من المجموعة أثناء تثبيت أحدث رسالة")
+            }
+
+            val before = adapter.snapshot(root)
+            totalNew += captureVisibleLinks(group, seen)
+
+            val moved = adapter.scrollGenericForward(root) ||
+                svc.swipeTowardNewerMessages(timing.gestureDurationMs)
+            val burst = captureBurst(group, seen, timing)
+            totalNew += burst.newLinks
+            passes++
+
+            val changed = burst.snapshot.contentSignature != before.contentSignature
+            if (!changed && burst.newLinks == 0) {
+                val newestConfirmed = if (prefs.fastEndVerificationEnabled) {
+                    proveFastEnd(
+                        group, seen, timing,
+                        directionForward = true,
+                        budgetMs = prefs.fastEndVerificationMs
+                    )
+                } else {
+                    proveQuietEnd(group, seen, timing, directionForward = true)
+                }
+                if (newestConfirmed) {
+                    repository.log(
+                        group.name,
+                        "INFO",
+                        "deep-newest-normalized",
+                        "تم تثبيت أحدث رسالة قبل المسح العميق بعد $passes حركة"
+                    )
+                    return totalNew
+                }
+            }
+
+            if (!moved && !changed) {
+                awaitUiChange(timing.eventQuietMs)
+            }
+        }
+
+        throw EndUnverifiedException("تعذر تثبيت أحدث رسالة قبل المسح العميق ضمن حد الحماية")
     }
 
     /**
@@ -1488,7 +1563,7 @@ object ExtractionController {
     }
 
     private suspend fun captureVisibleLinks(group: TargetGroup, seen: MutableSet<String>): Int {
-        val root = service?.currentRoot() ?: return 0
+        val root = recoverLiveService()?.currentRoot() ?: return 0
         val batch = ArrayList<LinkCandidate>()
         for (url in adapter.collectVisibleUrls(root)) {
             val normalized = LinkExtractor.normalize(url)
@@ -1517,7 +1592,7 @@ object ExtractionController {
         }
         // Final pass catches text exposed after the last mutation event.
         newLinks += captureVisibleLinks(group, seen)
-        return BurstResult(adapter.snapshot(service?.currentRoot()), newLinks)
+        return BurstResult(adapter.snapshot(recoverLiveService()?.currentRoot()), newLinks)
     }
 
     private suspend fun proveFastEnd(
@@ -1618,7 +1693,7 @@ object ExtractionController {
 
     private suspend fun ensureWhatsAppForeground(prefs: ExtractionPreferences) {
         val expected = requireSelectedPackage()
-        val root = service?.currentRoot()
+        val root = recoverLiveService()?.currentRoot()
         val observed = root?.packageName?.toString()
         if (adapter.isWhatsAppRoot(root, expected)) {
             if (_state.value.packageMismatch) _state.value = _state.value.copy(packageMismatch = false)
@@ -1638,7 +1713,7 @@ object ExtractionController {
         if (!prefs.autoRecoverWhatsApp) error("واتساب المحدد لم يعد في الواجهة")
         if (!openWhatsApp()) error("تعذر فتح ${WhatsAppInstanceRegistry.labelFor(expected)} داخل ${_state.value.profileInfo.labelAr}")
         awaitUiChange(ExtractionPolicy.timing(prefs.speed).recoveryMs)
-        val recoveredRoot = service?.currentRoot()
+        val recoveredRoot = recoverLiveService()?.currentRoot()
         if (!adapter.isWhatsAppRoot(recoveredRoot, expected)) {
             val now = recoveredRoot?.packageName?.toString()
             error("فشل Profile Guard: المتوقع ${WhatsAppInstanceRegistry.labelFor(expected)} لكن الظاهر ${WhatsAppInstanceRegistry.labelFor(now)}")
@@ -2327,6 +2402,81 @@ object ExtractionController {
         updateProgress(totalNew, "اكتملت الرسائل الجديدة عبر Shizuku • $totalNew رابط جديد")
     }
 
+    private data class ShizukuNewestResult(
+        val tree: ShizukuUiTree,
+        val sequence: Long,
+        val newLinks: Int
+    )
+
+    private suspend fun seekNewestBeforeDeepViaShizuku(
+        group: TargetGroup,
+        prefs: ExtractionPreferences,
+        packageName: String,
+        initialTree: ShizukuUiTree,
+        initialSequence: Long,
+        seen: MutableSet<String>
+    ): ShizukuNewestResult {
+        val timing = ExtractionPolicy.timing(prefs.speed)
+        var tree = initialTree
+        var sequence = initialSequence
+        var totalNew = 0
+        var passes = 0
+        val maxSeekPasses = minOf(prefs.maxScrollIterations, 240)
+
+        while (stateStore.active && passes < maxSeekPasses) {
+            awaitIfPaused()
+            if (!shizukuUi.isConversationOpenForTarget(tree, group.name, packageName)) {
+                error("Shizuku فقد محادثة القروب أثناء تثبيت أحدث رسالة")
+            }
+
+            val before = tree.contentSignature
+            totalNew += captureShizukuLinks(group, tree, seen)
+
+            val moved = shizukuUi.swipeListForward(tree, timing.gestureDurationMs.toInt())
+            val frame = shizukuUi.waitFrame(
+                packageName,
+                sequence,
+                timing.eventQuietMs.toInt().coerceAtLeast(50)
+            )
+            sequence = frame.first
+            val next = frame.second.takeIf { it.state == "OK" } ?: shizukuUi.snapshot(packageName)
+            val newlyFound = captureShizukuLinks(group, next, seen)
+            totalNew += newlyFound
+            val changed = next.contentSignature != before
+            tree = next
+            passes++
+
+            if (!changed && newlyFound == 0) {
+                val proofBefore = tree.contentSignature
+                val probeMoved = shizukuUi.swipeListForward(tree, timing.gestureDurationMs.toInt())
+                val proofFrame = shizukuUi.waitFrame(
+                    packageName,
+                    sequence,
+                    prefs.fastEndVerificationMs.toInt().coerceIn(120, 700)
+                )
+                sequence = proofFrame.first
+                val proofTree = proofFrame.second.takeIf { it.state == "OK" } ?: shizukuUi.snapshot(packageName)
+                val proofNew = captureShizukuLinks(group, proofTree, seen)
+                totalNew += proofNew
+                val stable = proofTree.contentSignature == proofBefore && proofNew == 0
+                tree = proofTree
+                if (stable && (!probeMoved || stable)) {
+                    repository.log(
+                        group.name,
+                        "INFO",
+                        "shizuku-deep-newest-normalized",
+                        "تم تثبيت أحدث رسالة قبل المسح العميق عبر Shizuku بعد $passes حركة"
+                    )
+                    return ShizukuNewestResult(tree, sequence, totalNew)
+                }
+            }
+
+            if (!moved && !changed) delay(timing.eventQuietMs.coerceAtMost(120L))
+        }
+
+        throw EndUnverifiedException("Shizuku: تعذر تثبيت أحدث رسالة قبل المسح العميق")
+    }
+
     private suspend fun extractDeepViaShizuku(group: TargetGroup, prefs: ExtractionPreferences, packageName: String) {
         if (prefs.mode == ExtractionMode.NEW_ONLY) {
             extractUnreadViaShizuku(group, prefs, packageName)
@@ -2344,6 +2494,17 @@ object ExtractionController {
         var iterations = 0
         var quietRounds = 0
         var sequence = shizukuUi.eventSequence(packageName)
+
+        _state.value = _state.value.copy(
+            status = EngineStatus.EXTRACTING,
+            message = "Shizuku: تثبيت أحدث رسالة قبل المسح العميق…",
+            phaseDetail = "deep-seek-newest"
+        )
+        val normalized = seekNewestBeforeDeepViaShizuku(group, prefs, packageName, tree, sequence, seen)
+        tree = normalized.tree
+        sequence = normalized.sequence
+        totalNew += normalized.newLinks
+
         _state.value = _state.value.copy(status = EngineStatus.EXTRACTING, message = "Shizuku Event-first: قراءة وسحب الرسائل الأقدم")
 
         while (stateStore.active && iterations < prefs.maxScrollIterations) {

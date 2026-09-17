@@ -100,7 +100,7 @@ object ScanController {
         return live
     }
 
-    private suspend fun ensureRuntimeReady(timeoutMs: Long = 8_500L): Boolean {
+    private suspend fun ensureRuntimeReady(timeoutMs: Long = 12_000L): Boolean {
         val packageName = ExtractionController.state.value.selectedWhatsAppPackage ?: run {
             _state.value = _state.value.copy(message = "RUNTIME_NO_TARGET: اختر نسخة واتساب أولاً")
             return false
@@ -136,7 +136,7 @@ object ScanController {
         if (runtimeTarget.effectiveBackend == com.althmany.extractor.profile.RuntimeBackendKind.ACCESSIBILITY &&
             !runtimeTarget.remoteTarget
         ) {
-            val accessDeadline = SystemClock.elapsedRealtime() + minOf(timeoutMs, 1_800L)
+            val accessDeadline = SystemClock.elapsedRealtime() + minOf(timeoutMs, 5_000L)
             while (SystemClock.elapsedRealtime() < accessDeadline) {
                 val live = recoverLiveService()
                 if (live != null && adapter.isWhatsAppRoot(live.currentRoot(), packageName)) {
@@ -170,7 +170,7 @@ object ScanController {
             ShizukuBridge.launchPackage(appContext, packageName, runtimeTarget.targetAndroidUserId)
             var lastDetail = "NO_SNAPSHOT"
             var resetTried = false
-            val deadline = SystemClock.elapsedRealtime() + (timeoutMs - 1_800L).coerceAtLeast(5_000L)
+            val deadline = SystemClock.elapsedRealtime() + (timeoutMs - 5_000L).coerceAtLeast(6_000L)
             while (SystemClock.elapsedRealtime() < deadline) {
                 val tree = shizukuUi.snapshot(packageName)
                 lastDetail = "${tree.state}:${tree.detail.take(140)}"
@@ -517,7 +517,7 @@ object ScanController {
                 deadline = SystemClock.uptimeMillis() + speed.previewTimeoutMs
                 _state.value = _state.value.copy(status = ScanEngineStatus.CLASSIFYING, message = "عاد الاتصال — إعادة تحليل نفس الرابط")
             }
-            val root = service?.currentRoot()
+            val root = recoverLiveService()?.currentRoot()
             if (root != null && adapter.isWhatsAppRoot(root, packageName)) {
                 val snap = adapter.snapshot(root)
                 val decision = InviteScanClassifier.classify(snap.texts)

@@ -128,7 +128,7 @@ object PublishController {
         return live
     }
 
-    private suspend fun ensureRuntimeReady(timeoutMs: Long = 8_500L): Boolean {
+    private suspend fun ensureRuntimeReady(timeoutMs: Long = 12_000L): Boolean {
         val packageName = ExtractionController.state.value.selectedWhatsAppPackage ?: run {
             _state.value = _state.value.copy(info = "RUNTIME_NO_TARGET: اختر نسخة واتساب أولاً")
             return false
@@ -161,7 +161,7 @@ object PublishController {
         }
 
         if (preference != RuntimeBackendPreference.SHIZUKU && !runtimeTarget.remoteTarget) {
-            val accessDeadline = SystemClock.elapsedRealtime() + minOf(timeoutMs, 1_800L)
+            val accessDeadline = SystemClock.elapsedRealtime() + minOf(timeoutMs, 5_000L)
             while (SystemClock.elapsedRealtime() < accessDeadline) {
                 val live = recoverLiveService()
                 if (live != null && adapter.isWhatsAppRoot(live.currentRoot(), packageName)) {
@@ -194,7 +194,7 @@ object PublishController {
             ShizukuBridge.launchPackage(appContext, packageName, runtimeTarget.targetAndroidUserId)
             var lastDetail = "NO_SNAPSHOT"
             var resetTried = false
-            val deadline = SystemClock.elapsedRealtime() + (timeoutMs - 1_800L).coerceAtLeast(5_000L)
+            val deadline = SystemClock.elapsedRealtime() + (timeoutMs - 5_000L).coerceAtLeast(6_000L)
             while (SystemClock.elapsedRealtime() < deadline) {
                 val tree = shizukuUi.snapshot(packageName)
                 lastDetail = "${tree.state}:${tree.detail.take(140)}"
@@ -571,7 +571,7 @@ object PublishController {
                 return PublishDecision(PublishStatus.GROUP_NOT_FOUND, "تعذر فتح القروب أو التحقق من أنه مجموعة")
             }
 
-            val root = service?.currentRoot()
+            val root = recoverLiveService()?.currentRoot()
             adapter.classifyPublishBlocker(root)?.let { blocker ->
                 return PublishDecision(blocker, blocker.labelAr)
             }

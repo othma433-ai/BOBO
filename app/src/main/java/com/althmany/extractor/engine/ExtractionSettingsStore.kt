@@ -23,7 +23,7 @@ class ExtractionSettingsStore(private val context: Context) {
         strictEndProof = prefs.getBoolean("strict_end", true),
         autoRecoverWhatsApp = prefs.getBoolean("auto_recover", true),
         targetWhatsAppPackage = prefs.getString("target_whatsapp_package", null),
-        continuousScrollEnabled = prefs.getBoolean("continuous_scroll", true),
+        continuousScrollEnabled = true,
         fastEndVerificationEnabled = prefs.getBoolean("fast_end_enabled", true),
         fastEndVerificationMs = prefs.getLong("fast_end_ms", 260L).coerceIn(120L, 700L),
         hiddenSearchNavigation = prefs.getBoolean("hidden_search_navigation", true),
@@ -54,7 +54,7 @@ class ExtractionSettingsStore(private val context: Context) {
 
 
     fun setContinuousScrollEnabled(enabled: Boolean) {
-        prefs.edit().putBoolean("continuous_scroll", enabled).apply()
+        prefs.edit().putBoolean("continuous_scroll", true).apply()
     }
 
     fun setFastEndVerificationEnabled(enabled: Boolean) {
