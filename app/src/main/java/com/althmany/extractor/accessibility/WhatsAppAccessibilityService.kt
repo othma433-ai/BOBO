@@ -15,6 +15,9 @@ import com.althmany.extractor.engine.RuntimeOperationCoordinator
 import com.althmany.extractor.engine.ScanController
 import com.althmany.extractor.profile.ProfileAccessibilityRuntime
 import com.althmany.extractor.profile.WhatsAppInstanceRegistry
+import com.althmany.extractor.runtime.recovery.TargetRecoveryCoordinator
+import com.althmany.extractor.runtime.RuntimeTelemetryBridge
+import com.althmany.extractor.profile.UnifiedRuntimeTargetStore
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -54,6 +57,9 @@ class WhatsAppAccessibilityService : AccessibilityService(), AccessibilityUiDriv
         val packageName = safeEvent.packageName?.toString()
         AccessibilityRuntimeBridge.event(this, packageName)
         packageName?.let { runCatching { ProfileAccessibilityRuntime.recordEvent(this, it) } }
+        val expectedPackage = UnifiedRuntimeTargetStore.selectedPackage(this)
+        RuntimeTelemetryBridge.recordTarget(expectedPackage, packageName)
+        TargetRecoveryCoordinator.onAccessibilityPackage(this, packageName)
         attachControllersSafely("event")
         if (!WhatsAppInstanceRegistry.isSupportedPackage(packageName)) return
         routeEvent(packageName)
@@ -159,6 +165,9 @@ class WhatsAppAccessibilityService : AccessibilityService(), AccessibilityUiDriv
                     )
                 }
                 val pkg = root?.packageName?.toString()
+                val expectedPackage = UnifiedRuntimeTargetStore.selectedPackage(this@WhatsAppAccessibilityService)
+                RuntimeTelemetryBridge.recordTarget(expectedPackage, pkg)
+                TargetRecoveryCoordinator.onAccessibilityPackage(this@WhatsAppAccessibilityService, pkg)
                 if (WhatsAppInstanceRegistry.isSupportedPackage(pkg)) {
                     attachControllersSafely("poll")
                     routeEvent(pkg)

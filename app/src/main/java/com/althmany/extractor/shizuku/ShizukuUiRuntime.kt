@@ -2,6 +2,9 @@ package com.althmany.extractor.shizuku
 
 import android.content.Context
 import android.graphics.Rect
+import com.althmany.extractor.runtime.recovery.TargetRecoveryCoordinator
+import com.althmany.extractor.runtime.RuntimeTelemetryBridge
+import android.os.SystemClock
 import com.althmany.extractor.data.GroupSyncCandidate
 import com.althmany.extractor.engine.LinkExtractor
 import com.althmany.extractor.engine.NodeSnapshot
@@ -121,11 +124,33 @@ internal class ShizukuUiRuntime(private val context: Context) {
         "meta ai", "بحث", "search", "الإعدادات", "settings", "مزامنة جهات الاتصال", "sync contacts", "واتساب", "whatsapp"
     )
 
-    suspend fun snapshot(packageName: String): ShizukuUiTree = parse(ShizukuBridge.fastSnapshot(context, packageName))
+    suspend fun snapshot(packageName: String): ShizukuUiTree {
+        val started = SystemClock.elapsedRealtime()
+        val tree = parse(ShizukuBridge.fastSnapshot(context, packageName))
+        val latency = (SystemClock.elapsedRealtime() - started).coerceAtLeast(0L)
+        RuntimeTelemetryBridge.recordSnapshot(
+            expectedPackage = packageName,
+            observedPackage = tree.rootPackage,
+            signature = tree.signature.toString(),
+            latencyMs = latency
+        )
+        TargetRecoveryCoordinator.onShizukuSnapshot(context, tree.rootPackage, tree.signature)
+        return tree
+    }
 
     suspend fun waitFrame(packageName: String, sequence: Long, timeoutMs: Int): Pair<Long, ShizukuUiTree> {
+        val started = SystemClock.elapsedRealtime()
         val frame = ShizukuBridge.waitAndSnapshot(context, packageName, sequence, timeoutMs, 1500)
-        return frame.sequence to parse(frame.result)
+        val tree = parse(frame.result)
+        val latency = (SystemClock.elapsedRealtime() - started).coerceAtLeast(0L)
+        RuntimeTelemetryBridge.recordSnapshot(
+            expectedPackage = packageName,
+            observedPackage = tree.rootPackage,
+            signature = tree.signature.toString(),
+            latencyMs = latency
+        )
+        TargetRecoveryCoordinator.onShizukuSnapshot(context, tree.rootPackage, tree.signature)
+        return frame.sequence to tree
     }
 
     suspend fun eventSequence(packageName: String): Long = ShizukuBridge.eventSequence(context, packageName)

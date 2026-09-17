@@ -1,4 +1,5 @@
 package com.althmany.extractor.engine
+import com.althmany.extractor.engine.performance.AdaptiveRuntimeBridge
 
 import com.althmany.groupmanager.accessibility.QuickJoinAccessibilityService
 import android.content.Context
@@ -464,8 +465,8 @@ object ExtractionController {
         val deadline = SystemClock.elapsedRealtime() + timeoutMs
         while (SystemClock.elapsedRealtime() < deadline) {
             if (adapter.isWhatsAppRoot(svc.currentRoot(), expectedPackage)) return true
-            withTimeoutOrNull(220L) { uiEvents.first() }
-            delay(20L)
+            withTimeoutOrNull(AdaptiveRuntimeBridge.extractionTiming().verifyDelayMs.coerceAtLeast(120L)) { uiEvents.first() }
+            delay(AdaptiveRuntimeBridge.extractionTiming().pollDelayMs.coerceAtMost(180L))
         }
         return adapter.isWhatsAppRoot(svc.currentRoot(), expectedPackage)
     }

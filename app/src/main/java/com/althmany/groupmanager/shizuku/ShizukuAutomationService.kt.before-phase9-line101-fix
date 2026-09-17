@@ -98,7 +98,7 @@ class ShizukuAutomationService : Service() {
     private var lastForegroundProbeSummary = "not-run"
     private var consecutiveDumpFailures = 0
     private var commandDumpKillRecoveryAttempts = 0
-    private var commandDumpSuppressedUntilElapsed: Long = 0L
+    private var commandDumpSuppressedUntilElapsed = maxOf(commandDumpSuppressedUntilElapsed, android.os.SystemClock.elapsedRealtime() + COMMAND_DUMP_KILL_COOLDOWN_MS)
     private var lastDumpFailureCountedAtElapsed = 0L
     private var lastCommandDumpCooldownLogAtElapsed = 0L
     private var userServiceRestartAttempts = 0

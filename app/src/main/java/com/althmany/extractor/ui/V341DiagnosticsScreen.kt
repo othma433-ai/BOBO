@@ -29,6 +29,8 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.althmany.extractor.engine.RuntimeOperationCoordinator
+import com.althmany.extractor.engine.performance.RuntimePerformanceOwner
+import com.althmany.extractor.engine.health.SmartRuntimeLiveHealth
 import com.althmany.extractor.profile.UnifiedRuntimeRepository
 import com.althmany.groupmanager.GroupManagerApp
 import com.althmany.groupmanager.accessibility.AccessibilityStatus
@@ -73,7 +75,7 @@ data class V341DiagnosticSnapshot(
     val recentLog: String
 ) {
     fun report(): String = buildString {
-        appendLine("AL-thmany 3.4.1 Runtime Diagnostic")
+        appendLine("AL-thmany ${com.althmany.groupmanager.BuildConfig.VERSION_NAME} Smart Runtime Diagnostic")
         appendLine("============================================================")
         appendLine("Android profile: $androidProfile")
         appendLine("Selected WhatsApp: $selectedWhatsApp")
@@ -264,6 +266,22 @@ fun V341DiagnosticsScreen(padding: PaddingValues, onSettings: () -> Unit) {
                     DLine("Confidence", snapshot.healthConfidence)
                     DLine("Watchdog", snapshot.healthWatchdog)
                 }
+            }
+
+            item {
+                val autoMode = snapshot.runtimeBackend.startsWith("AUTO")
+                val rows = listOf(
+                    RuntimePerformanceOwner.SCAN,
+                    RuntimePerformanceOwner.EXTRACTION,
+                    RuntimePerformanceOwner.PUBLISH
+                ).map {
+                    SmartRuntimeLiveHealth.capture(
+                        owner = it,
+                        preferenceAuto = autoMode,
+                        alternateBackendReady = snapshot.accessibilityConnected || snapshot.shizukuReady
+                    )
+                }
+                SmartRuntimeHealthPanel(rows)
             }
 
             item {

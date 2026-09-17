@@ -1,4 +1,5 @@
 package com.althmany.extractor.engine
+import com.althmany.extractor.engine.performance.AdaptiveRuntimeBridge
 
 import android.content.Context
 import android.content.Intent
@@ -406,7 +407,7 @@ object ScanController {
                         message = "${d.status.labelAr} — إعادة تحقق ذكية (${attempt + 1}/$maxAttempts)"
                     )
                     safelyReturnFromInvite(speed)
-                    delay(ScanRetryPolicy.backoffMs(d.status, attempt, speed))
+                    delay(maxOf(ScanRetryPolicy.backoffMs(d.status, attempt, speed), AdaptiveRuntimeBridge.scanTiming().actionDelayMs))
                 }
 
                 val last = finalResult?.decision

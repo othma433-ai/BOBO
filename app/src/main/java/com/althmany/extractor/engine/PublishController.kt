@@ -1,4 +1,5 @@
 package com.althmany.extractor.engine
+import com.althmany.extractor.engine.performance.AdaptiveRuntimeBridge
 
 import android.content.Context
 import android.content.Intent
@@ -735,7 +736,7 @@ object PublishController {
             }
             val before = adapter.snapshot(root).signature
             val moved = adapter.scrollChatListForward(root) || svc.swipeChatListForward(_state.value.speed.settleMs.coerceAtLeast(18L))
-            awaitEventOrDelay(70L)
+            awaitEventOrDelay(AdaptiveRuntimeBridge.publishTiming().verifyDelayMs.coerceAtMost(220L))
             val after = adapter.snapshot(svc.currentRoot()).signature
             stable = if (!moved || after == before || after == lastSignature) stable + 1 else 0
             lastSignature = after
@@ -1058,7 +1059,7 @@ object PublishController {
         while (SystemClock.uptimeMillis() < deadline) {
             if (predicate()) return true
             withTimeoutOrNull(150L) { uiEvents.first() }
-            delay(_state.value.speed.settleMs.coerceAtMost(90L))
+            delay(minOf(_state.value.speed.settleMs.coerceAtMost(90L), AdaptiveRuntimeBridge.publishTiming().pollDelayMs))
         }
         return predicate()
     }

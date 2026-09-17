@@ -3,6 +3,8 @@ package com.althmany.groupmanager
 import android.app.Application
 import androidx.appcompat.app.AppCompatDelegate
 import com.althmany.extractor.ExtractorFeatureRuntime
+import com.althmany.extractor.runtime.recovery.TargetRecoveryCoordinator
+import com.althmany.extractor.runtime.SmartRuntimeLifecycle
 import com.althmany.groupmanager.data.AppPreferences
 import com.althmany.groupmanager.data.GroupLinkDatabase
 import com.althmany.groupmanager.data.GroupLinkRepository
@@ -22,5 +24,7 @@ class GroupManagerApp : Application() {
         AppCompatDelegate.setDefaultNightMode(preferences.themeMode.nightMode)
         QuickJoinNotification.createChannel(this)
         ExtractorFeatureRuntime.initialize(this)
+        SmartRuntimeLifecycle.initialize(this)
+        TargetRecoveryCoordinator.restorePendingState(this)
     }
 }

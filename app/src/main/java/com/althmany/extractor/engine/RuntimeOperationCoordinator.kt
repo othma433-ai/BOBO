@@ -1,5 +1,7 @@
 package com.althmany.extractor.engine
 
+import com.althmany.extractor.runtime.SmartRuntimeLifecycle
+
 import java.util.concurrent.atomic.AtomicReference
 
 /**
@@ -22,7 +24,9 @@ object RuntimeOperationCoordinator {
     fun tryAcquire(operation: RuntimeOperation): Boolean {
         // Strict single-owner gate. Sync and Extraction both use EXTRACTION,
         // so the same enum may not re-enter while it already owns WhatsApp UI.
-        return owner.compareAndSet(null, operation)
+        val acquired = owner.compareAndSet(null, operation)
+        if (acquired) SmartRuntimeLifecycle.onAcquired(operation)
+        return acquired
     }
 
     /**
@@ -32,12 +36,26 @@ object RuntimeOperationCoordinator {
      */
     fun ensureOwned(operation: RuntimeOperation): Boolean {
         val current = owner.get()
-        if (current == operation) return true
-        return owner.compareAndSet(null, operation)
+        if (current == operation) {
+            SmartRuntimeLifecycle.onAcquired(operation)
+            return true
+        }
+        val acquired = owner.compareAndSet(null, operation)
+        if (acquired) SmartRuntimeLifecycle.onAcquired(operation)
+        return acquired
     }
 
     fun release(operation: RuntimeOperation) {
-        owner.compareAndSet(operation, null)
+        if (owner.compareAndSet(operation, null)) {
+            SmartRuntimeLifecycle.onReleased(operation)
+        }
+    }
+
+    /** Restores ownership metadata after process recreation without starting automation. */
+    fun restoreForRecovery(operation: RuntimeOperation): Boolean {
+        val current = owner.get()
+        if (current == operation) return true
+        return owner.compareAndSet(null, operation)
     }
 
     fun current(): RuntimeOperation? = owner.get()
