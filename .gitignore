@@ -23,3 +23,4 @@ apk-output/
 .worktrees/
 local.properties
 *.backup-*
+/AL-thmany-4.0-debug.apk
